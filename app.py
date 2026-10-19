@@ -1,214 +1,233 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 st.set_page_config(
-    page_title="Retail Sales Analytics",
+    page_title="General Data Analysis Dashboard",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 Retail Sales Analytics & Demand Forecasting")
-st.caption("Sales intelligence and 30-day demand prediction")
-
-URL = (
-    "https://archive.ics.uci.edu/ml/"
-    "machine-learning-databases/00352/Online%20Retail.xlsx"
+st.title("📊 General-Purpose Data Analysis Dashboard")
+st.write(
+    "Upload a CSV or Excel file to explore, clean, "
+    "visualize, and analyze your data."
 )
-
-@st.cache_data
-def load_data():
-    return pd.read_excel(URL, engine="openpyxl")
 
 uploaded = st.sidebar.file_uploader(
-    "Upload retail Excel or CSV",
-    type=["xlsx", "csv"]
+    "Upload your dataset",
+    type=["csv", "xlsx"]
 )
+
+if uploaded is None:
+    st.info("Upload a CSV or Excel file using the sidebar to begin.")
+    st.markdown("""
+    ### Features
+    - Automatic dataset summary
+    - Missing-value and duplicate detection
+    - Descriptive statistics
+    - Interactive charts
+    - Download cleaned data
+    """)
+    st.stop()
 
 try:
-    if uploaded is not None:
-        if uploaded.name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded)
-        else:
-            df = pd.read_excel(uploaded)
+    if uploaded.name.lower().endswith(".csv"):
+        df = pd.read_csv(uploaded)
     else:
-        df = load_data()
-
-    required = ["InvoiceNo", "StockCode", "Description",
-                "Quantity", "InvoiceDate", "UnitPrice"]
-
-    if not all(c in df.columns for c in required):
-        st.error("Dataset columns do not match the expected retail format.")
-        st.stop()
-
-    df = df.dropna(subset=["InvoiceDate", "Description"]).copy()
-    df["InvoiceDate"] = pd.to_datetime(
-        df["InvoiceDate"], errors="coerce"
-    )
-    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
-    df["UnitPrice"] = pd.to_numeric(df["UnitPrice"], errors="coerce")
-
-    df = df.dropna(subset=["InvoiceDate", "Quantity", "UnitPrice"])
-    df = df[
-        (~df["InvoiceNo"].astype(str).str.startswith("C")) &
-        (df["Quantity"] > 0) &
-        (df["UnitPrice"] > 0)
-    ].copy()
-
-    df["Revenue"] = df["Quantity"] * df["UnitPrice"]
-    df["Date"] = df["InvoiceDate"].dt.normalize()
-    df["Month"] = df["InvoiceDate"].dt.to_period("M").astype(str)
+        excel_file = pd.ExcelFile(uploaded)
+        sheet = st.sidebar.selectbox(
+            "Choose Excel sheet",
+            excel_file.sheet_names
+        )
+        df = pd.read_excel(excel_file, sheet_name=sheet)
 
 except Exception as e:
-    st.error(f"Unable to load data: {e}")
+    st.error(f"Could not read this file: {e}")
     st.stop()
 
-st.sidebar.header("Dashboard Filters")
-
-countries = sorted(df["Country"].dropna().unique())
-selected_countries = st.sidebar.multiselect(
-    "Country", countries, default=countries[:5]
-)
-
-products = sorted(df["Description"].dropna().unique())
-selected_products = st.sidebar.multiselect(
-    "Products", products, default=[]
-)
-
-start = st.sidebar.date_input(
-    "Start date", value=df["Date"].min().date()
-)
-end = st.sidebar.date_input(
-    "End date", value=df["Date"].max().date()
-)
-
-if start > end:
-    st.error("Start date must be before end date.")
+if df.empty or len(df.columns) == 0:
+    st.error("This file contains no usable data.")
     st.stop()
 
-filtered = df[
-    df["Date"].between(pd.Timestamp(start), pd.Timestamp(end)) &
-    df["Country"].isin(selected_countries)
-].copy()
+df.columns = df.columns.astype(str)
 
-if selected_products:
-    filtered = filtered[
-        filtered["Description"].isin(selected_products)
-    ]
+# Optionally remove duplicates and rows with missing values
+st.sidebar.header("Data cleaning")
+remove_duplicates = st.sidebar.checkbox(
+    "Remove duplicate rows", value=False
+)
+remove_missing = st.sidebar.checkbox(
+    "Remove rows with missing values", value=False
+)
 
-if filtered.empty:
-    st.warning("No data matches the selected filters.")
-    st.stop()
+data = df.copy()
 
-revenue = filtered["Revenue"].sum()
-units = filtered["Quantity"].sum()
-invoices = filtered["InvoiceNo"].nunique()
-product_count = filtered["StockCode"].nunique()
+if remove_duplicates:
+    data = data.drop_duplicates()
 
-a, b, c, d = st.columns(4)
-a.metric("Total Revenue", f"£{revenue:,.2f}")
-b.metric("Units Sold", f"{units:,.0f}")
-c.metric("Invoices", f"{invoices:,}")
-d.metric("Unique Products", f"{product_count:,}")
+if remove_missing:
+    data = data.dropna()
 
-left, right = st.columns(2)
+# Dashboard metrics
+st.header("Dataset Overview")
 
-with left:
-    monthly = filtered.groupby("Month", as_index=False)["Revenue"].sum()
-    st.plotly_chart(
-        px.line(monthly, x="Month", y="Revenue",
-                markers=True, title="Monthly Revenue"),
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Rows", f"{data.shape[0]:,}")
+c2.metric("Columns", f"{data.shape[1]:,}")
+c3.metric("Missing Cells", f"{data.isna().sum().sum():,}")
+c4.metric("Duplicate Rows", f"{data.duplicated().sum():,}")
+
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Data Preview",
+    "Data Quality",
+    "Statistics",
+    "Visualizations"
+])
+
+with tab1:
+    st.subheader("Dataset Preview")
+    st.dataframe(data.head(100), use_container_width=True)
+
+    st.subheader("Column Information")
+    info = pd.DataFrame({
+        "Column": data.columns,
+        "Data Type": data.dtypes.astype(str).values,
+        "Missing Values": data.isna().sum().values,
+        "Unique Values": data.nunique().values
+    })
+    st.dataframe(info, use_container_width=True)
+
+    st.download_button(
+        "Download Current Dataset as CSV",
+        data.to_csv(index=False).encode("utf-8"),
+        "analyzed_dataset.csv",
+        "text/csv"
+    )
+
+with tab2:
+    st.subheader("Missing Values by Column")
+    missing = data.isna().sum()
+    missing = missing[missing > 0].sort_values(ascending=False)
+
+    if missing.empty:
+        st.success("No missing values found.")
+    else:
+        missing_df = missing.rename("Missing Count").reset_index()
+        missing_df.columns = ["Column", "Missing Count"]
+        st.dataframe(missing_df, use_container_width=True)
+
+        st.plotly_chart(
+            px.bar(
+                missing_df,
+                x="Column",
+                y="Missing Count",
+                title="Missing Values by Column"
+            ),
+            use_container_width=True
+        )
+
+    st.write("Duplicate rows:", int(data.duplicated().sum()))
+
+with tab3:
+    st.subheader("Descriptive Statistics")
+    st.dataframe(
+        data.describe(include="all").T,
         use_container_width=True
     )
 
-with right:
-    top = (
-        filtered.groupby("Description", as_index=False)["Revenue"]
-        .sum().nlargest(10, "Revenue")
+    numeric = data.select_dtypes(include="number")
+    if len(numeric.columns) >= 2:
+        st.subheader("Correlation Matrix")
+        corr = numeric.corr()
+        st.plotly_chart(
+            px.imshow(
+                corr,
+                text_auto=".2f",
+                aspect="auto",
+                title="Numeric Column Correlations"
+            ),
+            use_container_width=True
+        )
+
+with tab4:
+    st.subheader("Create Your Own Chart")
+
+    columns = data.columns.tolist()
+    numeric_columns = data.select_dtypes(
+        include="number"
+    ).columns.tolist()
+
+    chart_type = st.selectbox(
+        "Choose chart type",
+        ["Bar Chart", "Line Chart", "Scatter Plot", "Histogram"]
     )
-    st.plotly_chart(
-        px.bar(top, x="Revenue", y="Description",
-               orientation="h", title="Top 10 Products"),
-        use_container_width=True
-    )
 
-country_sales = (
-    filtered.groupby("Country", as_index=False)["Revenue"]
-    .sum().nlargest(10, "Revenue")
+    x_col = st.selectbox("Choose X-axis column", columns)
+
+    if chart_type == "Histogram":
+        if pd.api.types.is_numeric_dtype(data[x_col]):
+            fig = px.histogram(
+                data, x=x_col, title=f"Distribution of {x_col}"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Choose a numeric column for a histogram.")
+
+    elif chart_type == "Scatter Plot":
+        possible_y = [
+            c for c in numeric_columns
+            if c != x_col
+        ]
+        if (
+            x_col in numeric_columns
+            and possible_y
+        ):
+            y_col = st.selectbox("Choose Y-axis column", possible_y)
+            st.plotly_chart(
+                px.scatter(
+                    data, x=x_col, y=y_col,
+                    title=f"{y_col} vs {x_col}"
+                ),
+                use_container_width=True
+            )
+        else:
+            st.warning(
+                "Scatter plots require numeric X and Y columns. "
+                "Choose a numeric X-axis column."
+            )
+
+    else:
+        possible_y = [
+            c for c in numeric_columns
+            if c != x_col
+        ]
+
+        if possible_y:
+            y_col = st.selectbox("Choose Y-axis column", possible_y)
+
+            if chart_type == "Bar Chart":
+                fig = px.bar(
+                    data, x=x_col, y=y_col,
+                    title=f"{y_col} by {x_col}"
+                )
+            else:
+                fig = px.line(
+                    data, x=x_col, y=y_col,
+                    title=f"{y_col} over {x_col}"
+                )
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning(
+                "This chart needs a numeric Y-axis column. "
+                "Choose a different X-axis column."
+            )
+
+st.caption(
+    "General-purpose analysis tool | "
+    "Results depend on the uploaded dataset."
 )
-st.plotly_chart(
-    px.bar(country_sales, x="Country", y="Revenue",
-           title="Revenue by Country"),
-    use_container_width=True
-)
 
-st.header("🔮 30-Day Demand Forecast")
-
-daily = (
-    filtered.groupby("Date")["Quantity"]
-    .sum().sort_index()
-    .asfreq("D", fill_value=0)
-)
-
-if len(daily) < 60:
-    st.warning("Select at least 60 days of data for forecasting.")
-else:
-    try:
-        model = ExponentialSmoothing(
-            daily.astype(float),
-            trend="add",
-            seasonal="add",
-            seasonal_periods=7,
-            initialization_method="estimated"
-        ).fit(optimized=True)
-
-        predicted = model.forecast(30).clip(lower=0)
-
-        forecast = pd.DataFrame({
-            "Date": predicted.index,
-            "Forecast Units": predicted.values
-        })
-
-        st.metric(
-            "Expected demand over 30 days",
-            f"{forecast['Forecast Units'].sum():,.0f} units"
-        )
-
-        fig = px.line(
-            daily.tail(90).rename("Actual Units").reset_index(),
-            x="Date", y="Actual Units",
-            title="Historical Demand"
-        )
-
-        fig.add_scatter(
-            x=forecast["Date"],
-            y=forecast["Forecast Units"],
-            mode="lines+markers",
-            name="30-Day Forecast"
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(forecast, use_container_width=True)
-
-        st.download_button(
-            "Download 30-Day Forecast",
-            forecast.to_csv(index=False),
-            "retail_forecast.csv",
-            "text/csv"
-        )
-
-    except Exception as e:
-        st.error(f"Forecast could not be generated: {e}")
-
-st.subheader("Retail Transaction Data")
-st.dataframe(filtered.head(500), use_container_width=True)
-
-st.download_button(
-    "Download Filtered Sales Data",
-    filtered.to_csv(index=False),
-    "retail_sales_report.csv",
-    "text/csv"
-)
