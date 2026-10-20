@@ -444,6 +444,72 @@ with tabs[6]:
                         st.download_button("Download predictions CSV",predictions.to_csv(index=False).encode("utf-8"),"predictions.csv","text/csv")
                     except Exception as e:
                         st.error(f"Model training failed: {e}")
+    st.markdown("#### Compare multiple models")
+    st.write("Train several baseline models on the same train/test split and compare their scores. This helps you choose a model based on evidence rather than guessing.")
+    if len(df) >= 10 and len(df.columns) >= 2:
+        if st.button("Compare all available models", key="compare_all_models"):
+            if not features:
+                st.error("Select at least one input feature before comparing models.")
+            else:
+                compare_work = df[features + [target]].dropna(subset=[target]).copy()
+                compare_X, compare_y = compare_work[features], compare_work[target]
+                compare_task = ("Classification" if (not pd.api.types.is_numeric_dtype(compare_y) or compare_y.nunique() <= 15) else "Regression") if task == "Auto-detect" else task
+                if len(compare_work) < 10:
+                    st.error("Not enough usable rows after removing missing target values.")
+                elif compare_task == "Classification" and compare_y.nunique() < 2:
+                    st.error("Classification needs at least two target classes.")
+                else:
+                    compare_num = compare_X.select_dtypes(include=np.number).columns.tolist()
+                    compare_cat = [c for c in features if c not in compare_num]
+                    compare_transformers = []
+                    if compare_num:
+                        compare_transformers.append(("numeric", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scale", StandardScaler())]), compare_num))
+                    if compare_cat:
+                        compare_transformers.append(("categorical", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", OneHotEncoder(handle_unknown="ignore"))]), compare_cat))
+                    compare_preprocessor = ColumnTransformer(compare_transformers)
+                    if compare_task == "Classification":
+                        compare_models = {
+                            "Random Forest": RandomForestClassifier(n_estimators=120, random_state=42),
+                            "Decision Tree": DecisionTreeClassifier(random_state=42),
+                            "Logistic Regression": LogisticRegression(max_iter=1000)
+                        }
+                        counts = compare_y.value_counts()
+                        compare_stratify = compare_y if counts.min() >= 2 and counts.size < len(compare_y) * 0.5 else None
+                    else:
+                        compare_models = {
+                            "Random Forest": RandomForestRegressor(n_estimators=120, random_state=42),
+                            "Decision Tree": DecisionTreeRegressor(random_state=42),
+                            "Linear Regression": LinearRegression()
+                        }
+                        compare_stratify = None
+                    try:
+                        cX_train, cX_test, cy_train, cy_test = train_test_split(compare_X, compare_y, test_size=test_pct / 100, random_state=42, stratify=compare_stratify)
+                        comparison_rows = []
+                        for name, estimator in compare_models.items():
+                            try:
+                                compare_pipe = Pipeline([("preprocess", compare_preprocessor), ("model", estimator)])
+                                compare_pipe.fit(cX_train, cy_train)
+                                compare_pred = compare_pipe.predict(cX_test)
+                                if compare_task == "Classification":
+                                    comparison_rows.append({"Model": name, "Accuracy": accuracy_score(cy_test, compare_pred), "Weighted F1": f1_score(cy_test, compare_pred, average="weighted", zero_division=0)})
+                                else:
+                                    comparison_rows.append({"Model": name, "MAE": mean_absolute_error(cy_test, compare_pred), "RMSE": float(np.sqrt(mean_squared_error(cy_test, compare_pred))), "R²": r2_score(cy_test, compare_pred) if len(cy_test) > 1 else np.nan})
+                            except Exception as model_error:
+                                comparison_rows.append({"Model": name, "Error": str(model_error)[:180]})
+                        comparison_df = pd.DataFrame(comparison_rows)
+                        st.dataframe(comparison_df.round(4), use_container_width=True, hide_index=True)
+                        valid = comparison_df[comparison_df.get("Error", pd.Series(index=comparison_df.index, dtype=object)).isna()] if "Error" in comparison_df.columns else comparison_df
+                        if not valid.empty:
+                            if compare_task == "Classification":
+                                best = valid.sort_values("Weighted F1", ascending=False).iloc[0]
+                                st.success(f"Best by Weighted F1 on this test split: {best['Model']} ({best['Weighted F1']:.3f}).")
+                            else:
+                                best = valid.sort_values("RMSE", ascending=True).iloc[0]
+                                st.success(f"Best by RMSE on this test split: {best['Model']} (RMSE {best['RMSE']:.3f}).")
+                        st.download_button("Download model comparison CSV", comparison_df.to_csv(index=False).encode("utf-8"), "datanova_model_comparison.csv", "text/csv", key="download_model_comparison")
+                        st.caption("These scores are based on one train/test split. For a final project, compare them with cross-validation and check for data leakage before drawing strong conclusions.")
+                    except Exception as e:
+                        st.error(f"Model comparison failed: {e}")
     st.caption("Model scores depend on the dataset, feature choices, and target definition.")
 
 with tabs[7]:
