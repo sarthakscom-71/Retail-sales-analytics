@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from io import BytesIO
+from io import BytesIO, StringIO
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
@@ -24,6 +24,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ---------- No-login local workspace ----------
+# This version intentionally avoids authentication and external databases.
+# Uploaded datasets remain in the current Streamlit session only.
 
 # ---------- UI theme ----------
 with st.sidebar:
@@ -74,8 +78,8 @@ div[data-testid="stSidebarContent"] {{ background:{panel}; }}
 st.markdown("""
 <div class="hero">
   <div class="hero-kicker">Your workspace for smarter decisions</div>
-  <h1>Data intelligence, made interactive.</h1>
-  <p>Explore datasets, find data quality issues, build visual insights, and test predictive models — all in one place.</p>
+  <h1>Your data, transformed into decisions.</h1>
+  <p>Track key metrics, discover trends, explore data quality, and evaluate predictive models in one workspace.</p>
   <div class="hero-pill">✦ ANALYTICS &nbsp; · &nbsp; VISUALIZATION &nbsp; · &nbsp; MACHINE LEARNING</div>
 </div>
 """, unsafe_allow_html=True)
@@ -92,10 +96,10 @@ with st.sidebar:
         "Fill numeric median and text mode"
     ])
     st.markdown("---")
-    st.markdown('<div class="small-note">DATANOVA · COLLEGE PROJECT EDITION</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-note">DATANOVA · COLLEGE PROJECT EDITION · NO LOGIN REQUIRED</div>', unsafe_allow_html=True)
 
 if not uploaded:
-    st.markdown('<div class="section-head">Welcome to your analytics workspace</div><div class="section-sub">Upload a dataset to activate your tools. You can use student marks, retail sales, or another tabular CSV/Excel file.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-head">Welcome to your analytics workspace</div><div class="section-sub">Upload a dataset to activate your dashboard, insights, visual analytics, forecasting, and machine-learning tools.</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     cards = [
         ("01", "Explore your data", "Preview records, inspect data types, and review useful summary statistics."),
@@ -111,6 +115,7 @@ if not uploaded:
     st.stop()
 
 try:
+    source_name = uploaded.name
     if uploaded.name.lower().endswith(".csv"):
         raw = pd.read_csv(uploaded)
     else:
@@ -146,13 +151,164 @@ duplicate_total = int(df.duplicated().sum())
 
 top_left, top_right = st.columns([3,1])
 with top_left:
-    st.markdown(f'<div class="section-head">Workspace overview</div><div class="section-sub">Currently analyzing <b>{uploaded.name}</b></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-head">Workspace overview</div><div class="section-sub">Currently analyzing <b>{source_name}</b></div>', unsafe_allow_html=True)
 with top_right:
     st.markdown(f'<div style="text-align:right;padding-top:12px;color:{muted};font-size:12px">● Dataset loaded &nbsp; <b>{len(df):,}</b> rows</div>', unsafe_allow_html=True)
 
-tabs = st.tabs(["Overview", "Data Explorer", "Data Quality", "Visual Analytics", "Auto Insights", "Forecasting", "Machine Learning", "Ask Your Data", "Reports & Export"])
+tabs = st.tabs(["Advanced Dashboard", "Overview", "Data Explorer", "Data Quality", "Visual Analytics", "Auto Insights", "Forecasting", "Machine Learning", "Ask Your Data", "Reports & Export"])
+
 
 with tabs[0]:
+    st.markdown('<div class="section-head">Advanced Analytics Dashboard</div><div class="section-sub">A focused business overview with interactive filters, performance indicators, and category trends.</div>', unsafe_allow_html=True)
+
+    dash_df = df.copy()
+    date_candidates_dash = []
+    for _col in dash_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(dash_df[_col]):
+            date_candidates_dash.append(_col)
+        elif dash_df[_col].dtype == "object":
+            _parsed = pd.to_datetime(dash_df[_col], errors="coerce")
+            if len(_parsed) and _parsed.notna().mean() >= 0.7:
+                date_candidates_dash.append(_col)
+
+    numeric_dash = dash_df.select_dtypes(include=np.number).columns.tolist()
+    categorical_dash = [
+        c for c in dash_df.columns
+        if (not pd.api.types.is_numeric_dtype(dash_df[c]))
+        and c not in date_candidates_dash
+        and dash_df[c].nunique(dropna=True) <= 100
+    ]
+
+    if dash_df.empty:
+        st.info("Upload a dataset with rows to build the dashboard.")
+    else:
+        f1, f2, f3 = st.columns([1.2, 1.2, 1.6])
+        date_dash = None
+        if date_candidates_dash:
+            default_date = next((c for c in date_candidates_dash if "date" in str(c).lower() or "time" in str(c).lower()), date_candidates_dash[0])
+            date_dash = f1.selectbox("Date field (optional)", ["None"] + date_candidates_dash, index=(["None"] + date_candidates_dash).index(default_date), key="dash_date_field")
+            if date_dash == "None":
+                date_dash = None
+        else:
+            f1.caption("No date field detected")
+
+        preferred_measure = next((c for c in numeric_dash if str(c).lower() in ["sales", "revenue", "profit", "amount", "total"]), numeric_dash[0] if numeric_dash else None)
+        measure_dash = f2.selectbox("Main metric", numeric_dash, index=numeric_dash.index(preferred_measure) if preferred_measure in numeric_dash else 0, key="dash_measure") if numeric_dash else None
+        group_dash = f3.selectbox("Break down by", ["None"] + categorical_dash, key="dash_group") if categorical_dash else "None"
+        if group_dash == "None":
+            group_dash = None
+
+        # Filter controls are applied to the dashboard only, not the rest of the analysis tabs.
+        if date_dash:
+            parsed_dates = pd.to_datetime(dash_df[date_dash], errors="coerce")
+            valid_dates = parsed_dates.dropna()
+            if not valid_dates.empty:
+                min_day = valid_dates.min().date()
+                max_day = valid_dates.max().date()
+                chosen_range = st.date_input(
+                    "Date range",
+                    value=(min_day, max_day),
+                    min_value=min_day,
+                    max_value=max_day,
+                    key="dash_date_range"
+                )
+                if isinstance(chosen_range, (tuple, list)) and len(chosen_range) == 2:
+                    start_day, end_day = chosen_range
+                    dash_df = dash_df.loc[
+                        parsed_dates.dt.date.between(start_day, end_day)
+                    ].copy()
+
+        filter_cols = st.columns(min(3, len(categorical_dash))) if categorical_dash else []
+        for idx, cat_col in enumerate(categorical_dash[:3]):
+            values = sorted(dash_df[cat_col].dropna().astype(str).unique().tolist())
+            if values and idx < len(filter_cols):
+                selected_values = filter_cols[idx].multiselect(
+                    f"{cat_col} filter",
+                    options=values,
+                    default=[],
+                    key=f"dash_filter_{idx}_{cat_col}",
+                    help="Leave empty to include every value."
+                )
+                if selected_values:
+                    dash_df = dash_df[dash_df[cat_col].astype(str).isin(selected_values)]
+
+        st.markdown("---")
+        if dash_df.empty:
+            st.warning("No rows match the selected dashboard filters. Adjust the filters above.")
+        else:
+            row_count = len(dash_df)
+            missing_count = int(dash_df.isna().sum().sum())
+            duplicate_count = int(dash_df.duplicated().sum())
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Filtered records", f"{row_count:,}", delta=f"{row_count-len(df):+,} vs full dataset")
+            k2.metric("Fields", f"{len(dash_df.columns):,}")
+            k3.metric("Missing cells", f"{missing_count:,}")
+            k4.metric("Duplicate rows", f"{duplicate_count:,}")
+
+            if measure_dash:
+                metric_values = pd.to_numeric(dash_df[measure_dash], errors="coerce").dropna()
+                m1, m2, m3 = st.columns(3)
+                if not metric_values.empty:
+                    m1.metric(f"Total {measure_dash}", f"{metric_values.sum():,.2f}")
+                    m2.metric(f"Average {measure_dash}", f"{metric_values.mean():,.2f}")
+                    m3.metric(f"Median {measure_dash}", f"{metric_values.median():,.2f}")
+                else:
+                    st.info(f"No numeric values are available in {measure_dash} after filtering.")
+
+            chart_left, chart_right = st.columns([1.4, 1])
+            with chart_left:
+                st.markdown("#### Trend over time")
+                if date_dash and measure_dash:
+                    trend_data = pd.DataFrame({
+                        "Date": pd.to_datetime(dash_df[date_dash], errors="coerce"),
+                        "Metric": pd.to_numeric(dash_df[measure_dash], errors="coerce")
+                    }).dropna()
+                    if not trend_data.empty:
+                        trend_data = trend_data.groupby("Date", as_index=False)["Metric"].sum().sort_values("Date")
+                        if len(trend_data) > 150:
+                            trend_data = trend_data.set_index("Date").resample("W")["Metric"].sum().reset_index()
+                        trend_fig = px.line(trend_data, x="Date", y="Metric", markers=True, title=f"{measure_dash} over time")
+                        trend_fig.update_layout(template=plot_template, margin=dict(t=50, b=15, l=10, r=10))
+                        st.plotly_chart(trend_fig, use_container_width=True)
+                    else:
+                        st.info("No valid date/metric pairs are available for a trend chart.")
+                elif measure_dash and group_dash:
+                    group_data = dash_df.groupby(group_dash, dropna=False)[measure_dash].sum().reset_index().sort_values(measure_dash, ascending=False).head(15)
+                    group_fig = px.bar(group_data, x=group_dash, y=measure_dash, title=f"{measure_dash} by {group_dash}")
+                    group_fig.update_layout(template=plot_template, margin=dict(t=50, b=15, l=10, r=10))
+                    st.plotly_chart(group_fig, use_container_width=True)
+                else:
+                    st.info("Choose a date field or a category to display a trend chart.")
+
+            with chart_right:
+                st.markdown("#### Top categories")
+                if group_dash and measure_dash:
+                    top_data = dash_df.groupby(group_dash, dropna=False)[measure_dash].sum().reset_index().sort_values(measure_dash, ascending=False).head(10)
+                    top_fig = px.bar(top_data.sort_values(measure_dash), x=measure_dash, y=group_dash, orientation="h", title=f"Top {group_dash}")
+                    top_fig.update_layout(template=plot_template, margin=dict(t=50, b=15, l=10, r=10))
+                    st.plotly_chart(top_fig, use_container_width=True)
+                    st.dataframe(top_data, use_container_width=True, hide_index=True)
+                elif categorical_dash:
+                    top_col = categorical_dash[0]
+                    top_data = dash_df[top_col].astype(str).value_counts().head(10).rename_axis(top_col).reset_index(name="Records")
+                    top_fig = px.bar(top_data, x=top_col, y="Records", title=f"Most frequent {top_col}")
+                    top_fig.update_layout(template=plot_template, margin=dict(t=50, b=15, l=10, r=10))
+                    st.plotly_chart(top_fig, use_container_width=True)
+                else:
+                    st.info("No suitable category field is available for a category breakdown.")
+
+            st.markdown("#### Filtered data preview")
+            st.dataframe(dash_df.head(20), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download dashboard data (CSV)",
+                dash_df.to_csv(index=False).encode("utf-8"),
+                "datanova_dashboard_filtered_data.csv",
+                "text/csv",
+                key="download_dashboard_filtered"
+            )
+
+
+with tabs[1]:
     st.markdown('<div class="section-head">At a glance</div><div class="section-sub">A quick snapshot of the dataset after applying your selected preparation options.</div>', unsafe_allow_html=True)
     a,b,c,d = st.columns(4)
     a.metric("Total records", f"{len(df):,}", help="Number of rows currently in the dataset")
@@ -173,7 +329,7 @@ with tabs[0]:
         st.markdown("#### Numeric summary")
         st.dataframe(df[numeric_cols].describe().T.round(3), use_container_width=True)
 
-with tabs[1]:
+with tabs[2]:
     st.markdown('<div class="section-head">Data Explorer</div><div class="section-sub">Search fields and inspect records in your dataset.</div>', unsafe_allow_html=True)
     search = st.text_input("Search for a column", placeholder="Start typing a column name...")
     choices = [c for c in df.columns if search.lower() in str(c).lower()]
@@ -190,7 +346,7 @@ with tabs[1]:
     st.markdown("#### Column profile")
     st.dataframe(profile, use_container_width=True, hide_index=True)
 
-with tabs[2]:
+with tabs[3]:
     st.markdown('<div class="section-head">Data Quality</div><div class="section-sub">Understand completeness and identify records that may need attention.</div>', unsafe_allow_html=True)
     l,r = st.columns(2)
     with l:
@@ -221,7 +377,7 @@ with tabs[2]:
         else:
             st.info("No suitable numeric columns for outlier scanning.")
 
-with tabs[3]:
+with tabs[4]:
     st.markdown('<div class="section-head">Visual Analytics</div><div class="section-sub">Create charts and explore relationships interactively.</div>', unsafe_allow_html=True)
     chart_type = st.selectbox("Visualization", ["Histogram", "Bar chart", "Line chart", "Scatter plot", "Box plot"])
     x_col = st.selectbox("X-axis / category", df.columns.tolist())
@@ -263,7 +419,7 @@ with tabs[3]:
         st.plotly_chart(fig, use_container_width=True)
 
 
-with tabs[4]:
+with tabs[5]:
     st.markdown('<div class="section-head">Automated Data Insights</div><div class="section-sub">Quick, rule-based findings generated from the dataset you uploaded.</div>', unsafe_allow_html=True)
     if not numeric_cols:
         st.info("Upload a dataset with numeric columns to discover numeric patterns.")
@@ -310,7 +466,7 @@ with tabs[4]:
     q3.metric("Columns with missing data", f"{int((df.isna().sum() > 0).sum()):,}")
     st.caption("These insights are calculated from your current prepared dataset. They are statistical summaries, not generative AI advice.")
 
-with tabs[5]:
+with tabs[6]:
     st.markdown('<div class="section-head">Time-Series Forecasting</div><div class="section-sub">Estimate future values from historical date-based data using a simple machine-learning model.</div>', unsafe_allow_html=True)
     date_candidates = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
     if not date_candidates:
@@ -380,7 +536,7 @@ with tabs[5]:
         except Exception as e:
             st.error(f"Could not build the time series: {e}. Check that the date column and numeric values are valid.")
 
-with tabs[6]:
+with tabs[7]:
     st.markdown('<div class="section-head">Machine Learning Lab</div><div class="section-sub">Train a baseline model and evaluate how well it predicts a selected target.</div>', unsafe_allow_html=True)
     if len(df) < 10 or len(df.columns) < 2:
         st.warning("At least 10 rows and 2 columns are needed.")
@@ -512,7 +668,7 @@ with tabs[6]:
                         st.error(f"Model comparison failed: {e}")
     st.caption("Model scores depend on the dataset, feature choices, and target definition.")
 
-with tabs[7]:
+with tabs[8]:
     st.markdown('<div class="section-head">Ask Your Data</div><div class="section-sub">Ask common questions about your current dataset. This built-in helper uses rules and statistics, not a generative AI service.</div>', unsafe_allow_html=True)
     question = st.text_input("Your question", placeholder="e.g. Which column has the most missing values?")
     if st.button("Find answer"):
@@ -546,7 +702,7 @@ with tabs[7]:
         else:
             st.info("Try: row count, column names, missing values, duplicates, average, correlation, highest, or lowest.")
 
-with tabs[8]:
+with tabs[9]:
     st.markdown('<div class="section-head">Reports & Export</div><div class="section-sub">Download the prepared dataset or create a compact summary report.</div>', unsafe_allow_html=True)
     col1,col2 = st.columns(2)
     with col1:
@@ -568,7 +724,7 @@ with tabs[8]:
             styles = getSampleStyleSheet()
             story = [
                 Paragraph("DataNova — Dataset Summary",styles["Title"]),Spacer(1,12),
-                Paragraph(f"File: {uploaded.name}",styles["Normal"]),
+                Paragraph(f"File: {source_name}",styles["Normal"]),
                 Paragraph(f"Generated: {datetime.now():%Y-%m-%d %H:%M}",styles["Normal"]),
                 Paragraph(f"Rows: {len(df):,} | Columns: {len(df.columns):,}",styles["Normal"]),
                 Paragraph(f"Missing cells: {missing_total:,} | Duplicate rows: {duplicate_total:,}",styles["Normal"]),
