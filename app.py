@@ -150,7 +150,7 @@ with top_left:
 with top_right:
     st.markdown(f'<div style="text-align:right;padding-top:12px;color:{muted};font-size:12px">● Dataset loaded &nbsp; <b>{len(df):,}</b> rows</div>', unsafe_allow_html=True)
 
-tabs = st.tabs(["Overview", "Data Explorer", "Data Quality", "Visual Analytics", "Machine Learning", "Ask Your Data", "Reports & Export"])
+tabs = st.tabs(["Overview", "Data Explorer", "Data Quality", "Visual Analytics", "Auto Insights", "Forecasting", "Machine Learning", "Ask Your Data", "Reports & Export"])
 
 with tabs[0]:
     st.markdown('<div class="section-head">At a glance</div><div class="section-sub">A quick snapshot of the dataset after applying your selected preparation options.</div>', unsafe_allow_html=True)
@@ -262,7 +262,125 @@ with tabs[3]:
         fig.update_layout(template=plot_template)
         st.plotly_chart(fig, use_container_width=True)
 
+
 with tabs[4]:
+    st.markdown('<div class="section-head">Automated Data Insights</div><div class="section-sub">Quick, rule-based findings generated from the dataset you uploaded.</div>', unsafe_allow_html=True)
+    if not numeric_cols:
+        st.info("Upload a dataset with numeric columns to discover numeric patterns.")
+    else:
+        st.markdown("#### Key numeric observations")
+        insight_cols = st.columns(3)
+        for i, col in enumerate(numeric_cols[:3]):
+            series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if not series.empty:
+                insight_cols[i].metric(f"Average · {col}", f"{series.mean():,.2f}")
+        left, right = st.columns(2)
+        with left:
+            st.markdown("#### Highest variability")
+            variability = df[numeric_cols].std(numeric_only=True).sort_values(ascending=False).dropna()
+            if not variability.empty:
+                st.write(f"**{variability.index[0]}** has the largest standard deviation ({variability.iloc[0]:,.2f}) among numeric columns.")
+                st.dataframe(variability.rename("Standard deviation").reset_index(names="Column"), use_container_width=True, hide_index=True)
+        with right:
+            st.markdown("#### Strongest numeric relationship")
+            if len(numeric_cols) >= 2:
+                corr = df[numeric_cols].corr(numeric_only=True)
+                pairs = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool)).stack().dropna()
+                if not pairs.empty:
+                    pair = pairs.abs().idxmax()
+                    st.write(f"**{pair[0]}** and **{pair[1]}** have the strongest absolute correlation (r = {pairs.loc[pair]:.3f}). Correlation does not prove causation.")
+                else:
+                    st.info("Not enough valid numeric pairs to calculate correlation.")
+            else:
+                st.info("At least two numeric columns are needed for correlation.")
+        st.markdown("#### Highest and lowest values")
+        chosen_metric = st.selectbox("Choose a numeric column", numeric_cols, key="insight_metric")
+        clean_values = pd.to_numeric(df[chosen_metric], errors="coerce").dropna()
+        if not clean_values.empty:
+            row_max = clean_values.idxmax()
+            row_min = clean_values.idxmin()
+            a, b = st.columns(2)
+            a.metric("Maximum", f"{clean_values.loc[row_max]:,.3f}")
+            b.metric("Minimum", f"{clean_values.loc[row_min]:,.3f}")
+            st.caption(f"Maximum is on source row {row_max + 1}; minimum is on source row {row_min + 1} (row numbers refer to the uploaded dataset).")
+    st.markdown("#### Data quality summary")
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Missing cells", f"{int(df.isna().sum().sum()):,}")
+    q2.metric("Duplicate rows", f"{int(df.duplicated().sum()):,}")
+    q3.metric("Columns with missing data", f"{int((df.isna().sum() > 0).sum()):,}")
+    st.caption("These insights are calculated from your current prepared dataset. They are statistical summaries, not generative AI advice.")
+
+with tabs[5]:
+    st.markdown('<div class="section-head">Time-Series Forecasting</div><div class="section-sub">Estimate future values from historical date-based data using a simple machine-learning model.</div>', unsafe_allow_html=True)
+    date_candidates = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+    if not date_candidates:
+        for c in df.columns:
+            if df[c].dtype == "object":
+                parsed = pd.to_datetime(df[c], errors="coerce")
+                if parsed.notna().mean() >= 0.7:
+                    date_candidates.append(c)
+    if not date_candidates or not numeric_cols:
+        st.info("To forecast, upload data containing a date/time column and at least one numeric column (for example, Order Date and Sales).")
+    else:
+        fc1, fc2, fc3 = st.columns(3)
+        date_col = fc1.selectbox("Date column", date_candidates, key="forecast_date")
+        target_col = fc2.selectbox("Value to forecast", numeric_cols, key="forecast_target")
+        frequency_label = fc3.selectbox("Time interval", ["Daily", "Weekly", "Monthly"], index=2, key="forecast_freq")
+        horizon = st.slider("Number of future periods", min_value=1, max_value=12, value=6, key="forecast_horizon")
+        freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "MS"}
+        try:
+            series_df = pd.DataFrame({"date": pd.to_datetime(df[date_col], errors="coerce"), "value": pd.to_numeric(df[target_col], errors="coerce")}).dropna()
+            series_df = series_df.groupby(pd.Grouper(key="date", freq=freq_map[frequency_label]))["value"].sum().dropna().sort_index()
+            series_df = series_df[series_df.index.notna()]
+            if len(series_df) < 5:
+                st.warning(f"Only {len(series_df)} usable time periods were found. Please use at least 5 periods for a basic forecast.")
+            else:
+                st.markdown("#### Historical pattern")
+                hist = series_df.rename("Actual").reset_index()
+                hist.columns = ["Date", "Actual"]
+                fig = px.line(hist, x="Date", y="Actual", title=f"Historical {target_col} ({frequency_label.lower()} totals)", markers=True)
+                fig.update_layout(template=plot_template)
+                st.plotly_chart(fig, use_container_width=True)
+                if st.button("Generate forecast", type="primary", key="generate_forecast"):
+                    values = series_df.astype(float).to_numpy()
+                    # Lag-based supervised learning; recursive predictions use the last known/predicted values.
+                    max_lag = min(3, max(1, len(values) // 3))
+                    X_lag, y_lag = [], []
+                    for i in range(max_lag, len(values)):
+                        X_lag.append([values[i-j] for j in range(1, max_lag+1)])
+                        y_lag.append(values[i])
+                    if len(y_lag) < 3:
+                        st.warning("Not enough history to train a lag-based model. Add more time periods.")
+                    else:
+                        model = RandomForestRegressor(n_estimators=150, random_state=42)
+                        model.fit(np.asarray(X_lag), np.asarray(y_lag))
+                        rolling = list(values)
+                        future_vals = []
+                        for _ in range(horizon):
+                            features_lag = [rolling[-j] for j in range(1, max_lag+1)]
+                            prediction = float(model.predict([features_lag])[0])
+                            future_vals.append(prediction)
+                            rolling.append(prediction)
+                        last_date = series_df.index[-1]
+                        if frequency_label == "Daily":
+                            future_dates = pd.date_range(last_date + pd.Timedelta(days=1), periods=horizon, freq="D")
+                        elif frequency_label == "Weekly":
+                            future_dates = pd.date_range(last_date + pd.Timedelta(weeks=1), periods=horizon, freq="W")
+                        else:
+                            future_dates = pd.date_range(last_date + pd.offsets.MonthBegin(1), periods=horizon, freq="MS")
+                        forecast_df = pd.DataFrame({"Date": future_dates, "Forecast": future_vals})
+                        st.markdown("#### Forecast results")
+                        st.dataframe(forecast_df.round(2), use_container_width=True, hide_index=True)
+                        combined = pd.concat([hist.rename(columns={"Actual": "Value"}).assign(Type="Historical"), forecast_df.rename(columns={"Forecast": "Value"}).assign(Type="Forecast")], ignore_index=True)
+                        fig2 = px.line(combined, x="Date", y="Value", color="Type", markers=True, title="Historical values and forecast")
+                        fig2.update_layout(template=plot_template)
+                        st.plotly_chart(fig2, use_container_width=True)
+                        st.download_button("Download forecast CSV", forecast_df.to_csv(index=False).encode("utf-8"), "datanova_forecast.csv", "text/csv")
+                        st.caption("Forecasts are estimates, not guarantees. This baseline model uses recent lagged values and may not capture holidays, promotions, seasonality, or external factors.")
+        except Exception as e:
+            st.error(f"Could not build the time series: {e}. Check that the date column and numeric values are valid.")
+
+with tabs[6]:
     st.markdown('<div class="section-head">Machine Learning Lab</div><div class="section-sub">Train a baseline model and evaluate how well it predicts a selected target.</div>', unsafe_allow_html=True)
     if len(df) < 10 or len(df.columns) < 2:
         st.warning("At least 10 rows and 2 columns are needed.")
@@ -328,7 +446,7 @@ with tabs[4]:
                         st.error(f"Model training failed: {e}")
     st.caption("Model scores depend on the dataset, feature choices, and target definition.")
 
-with tabs[5]:
+with tabs[7]:
     st.markdown('<div class="section-head">Ask Your Data</div><div class="section-sub">Ask common questions about your current dataset. This built-in helper uses rules and statistics, not a generative AI service.</div>', unsafe_allow_html=True)
     question = st.text_input("Your question", placeholder="e.g. Which column has the most missing values?")
     if st.button("Find answer"):
@@ -362,7 +480,7 @@ with tabs[5]:
         else:
             st.info("Try: row count, column names, missing values, duplicates, average, correlation, highest, or lowest.")
 
-with tabs[6]:
+with tabs[8]:
     st.markdown('<div class="section-head">Reports & Export</div><div class="section-sub">Download the prepared dataset or create a compact summary report.</div>', unsafe_allow_html=True)
     col1,col2 = st.columns(2)
     with col1:
@@ -402,4 +520,3 @@ with tabs[6]:
             st.error(f"PDF generation failed: {e}")
 
 st.markdown(f'<div style="text-align:center;color:{muted};font-size:11px;padding:26px 0 4px">DATANOVA DATA INTELLIGENCE STUDIO · BUILT FOR LEARNING & ANALYSIS</div>', unsafe_allow_html=True)
-
