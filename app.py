@@ -163,13 +163,31 @@ with tabs[0]:
 
     dash_df = df.copy()
     date_candidates_dash = []
+    # Detect real date columns and date-like text columns (e.g. 2025-01-01).
+    # Check date-like column names first so pandas' mixed-format inference
+    # cannot accidentally hide a valid date field.
     for _col in dash_df.columns:
-        if pd.api.types.is_datetime64_any_dtype(dash_df[_col]):
+        _series = dash_df[_col]
+        _col_name = str(_col).strip().lower()
+        _name_suggests_date = any(token in _col_name for token in ("date", "datetime", "timestamp", "time"))
+
+        if pd.api.types.is_datetime64_any_dtype(_series):
             date_candidates_dash.append(_col)
-        elif dash_df[_col].dtype == "object":
-            _parsed = pd.to_datetime(dash_df[_col], errors="coerce")
-            if len(_parsed) and _parsed.notna().mean() >= 0.7:
+            continue
+
+        if _series.dtype == "object" or pd.api.types.is_string_dtype(_series):
+            try:
+                _parsed = pd.to_datetime(_series, errors="coerce", format="mixed")
+            except (TypeError, ValueError):
+                _parsed = pd.to_datetime(_series, errors="coerce")
+
+            _valid_ratio = float(_parsed.notna().mean()) if len(_parsed) else 0.0
+            _threshold = 0.5 if _name_suggests_date else 0.8
+            if _valid_ratio >= _threshold and (_name_suggests_date or _valid_ratio >= 0.8):
                 date_candidates_dash.append(_col)
+                # Store the parsed values so the date range and trend chart
+                # both work even when the uploaded column was text.
+                dash_df[_col] = _parsed
 
     numeric_dash = dash_df.select_dtypes(include=np.number).columns.tolist()
     categorical_dash = [
