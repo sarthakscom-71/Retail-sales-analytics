@@ -280,7 +280,7 @@ with tabs[4]:
             variability = df[numeric_cols].std(numeric_only=True).sort_values(ascending=False).dropna()
             if not variability.empty:
                 st.write(f"**{variability.index[0]}** has the largest standard deviation ({variability.iloc[0]:,.2f}) among numeric columns.")
-                st.dataframe(variability.rename("Standard deviation").reset_index(names="Column"), use_container_width=True, hide_index=True)
+                st.dataframe(variability.rename("Standard deviation").rename_axis("Column").reset_index(), use_container_width=True, hide_index=True)
         with right:
             st.markdown("#### Strongest numeric relationship")
             if len(numeric_cols) >= 2:
