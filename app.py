@@ -687,38 +687,277 @@ with tabs[7]:
     st.caption("Model scores depend on the dataset, feature choices, and target definition.")
 
 with tabs[8]:
-    st.markdown('<div class="section-head">Ask Your Data</div><div class="section-sub">Ask common questions about your current dataset. This built-in helper uses rules and statistics, not a generative AI service.</div>', unsafe_allow_html=True)
-    question = st.text_input("Your question", placeholder="e.g. Which column has the most missing values?")
-    if st.button("Find answer"):
+    st.markdown(
+        '<div class="section-head">Ask Your Data</div>'
+        '<div class="section-sub">Ask questions about your dataset using '
+        'built-in calculations. No paid API or external AI service required.</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ---------- Question-answer helper ----------
+    def answer_data_question(question, data):
         q = question.lower().strip()
+        numeric = data.select_dtypes(include=np.number).columns.tolist()
+        categorical = [
+            c for c in data.columns
+            if not pd.api.types.is_numeric_dtype(data[c])
+        ]
+
         if not q:
-            st.warning("Type a question first.")
-        elif "missing" in q or "null" in q:
-            m = df.isna().sum().sort_values(ascending=False)
-            st.write(f"Total missing cells: **{int(m.sum()):,}**. Highest: **{m.index[0]}** ({int(m.iloc[0])}).")
-            if m.sum(): st.dataframe(m[m>0].rename("Missing values").reset_index(),use_container_width=True)
-        elif "duplicate" in q:
-            st.write(f"The dataset has **{duplicate_total:,} duplicate rows**.")
-        elif "row" in q or "record" in q:
-            st.write(f"The dataset has **{len(df):,} rows** and **{len(df.columns):,} columns**.")
-        elif "column" in q:
-            st.write("Columns: " + ", ".join(map(str,df.columns.tolist())))
-        elif "average" in q or "mean" in q:
-            if numeric_cols: st.dataframe(df[numeric_cols].mean().rename("Average").reset_index(),use_container_width=True)
-            else: st.info("No numeric columns are available.")
-        elif "correlation" in q and len(numeric_cols)>=2:
-            corr = df[numeric_cols].corr(numeric_only=True)
-            pairs = corr.where(np.triu(np.ones(corr.shape),1).astype(bool)).stack()
-            if len(pairs):
-                best = pairs.abs().idxmax()
-                st.write(f"Strongest numeric correlation: **{best[0]}** and **{best[1]}** (r = {pairs.loc[best]:.3f}).")
-            else: st.info("No correlation pairs found.")
-        elif any(k in q for k in ["highest","maximum","lowest","minimum"]) and numeric_cols:
-            col = st.selectbox("Numeric column",numeric_cols)
-            value = df[col].max() if any(k in q for k in ["highest","maximum"]) else df[col].min()
-            st.write(f"Value: **{value}** in **{col}**.")
+            return "Please enter a question.", None
+
+        # Missing values
+        if any(word in q for word in ["missing", "null", "empty", "blank"]):
+            missing = data.isna().sum().sort_values(ascending=False)
+            missing = missing[missing > 0]
+
+            if missing.empty:
+                return "There are no missing values in the current dataset.", None
+
+            result = missing.rename("Missing values").reset_index()
+            result.columns = ["Column", "Missing values"]
+            return (
+                f"**Total missing cells:** {int(missing.sum()):,}\n\n"
+                f"**Most affected column:** {missing.index[0]} "
+                f"({int(missing.iloc[0]):,} missing values).",
+                result,
+            )
+
+        # Duplicate records
+        if "duplicate" in q or "repeated row" in q:
+            count = int(data.duplicated().sum())
+            return f"The dataset contains **{count:,} duplicate rows**.", None
+
+        # Number of rows and columns
+        if any(word in q for word in ["row", "record", "entries"]):
+            return (
+                f"The dataset contains **{len(data):,} rows** and "
+                f"**{len(data.columns):,} columns**.",
+                None,
+            )
+
+        if "column" in q and any(
+            word in q for word in ["list", "name", "available", "all"]
+        ):
+            result = pd.DataFrame({
+                "Column": data.columns.astype(str),
+                "Data type": [str(data[c].dtype) for c in data.columns],
+            })
+            return "**Available columns:**", result
+
+        # Correlation between numeric columns
+        if "correlation" in q or "correlated" in q:
+            if len(numeric) < 2:
+                return "At least two numeric columns are needed for correlation.", None
+
+            corr = data[numeric].corr(numeric_only=True)
+            pairs = corr.where(
+                np.triu(np.ones(corr.shape), k=1).astype(bool)
+            ).stack().dropna()
+
+            if pairs.empty:
+                return "There are not enough valid values to calculate correlation.", None
+
+            strongest = pairs.abs().idxmax()
+            value = float(pairs.loc[strongest])
+
+            return (
+                f"The strongest absolute numeric correlation is between "
+                f"**{strongest[0]}** and **{strongest[1]}** "
+                f"(r = {value:.3f}). Correlation does not prove causation.",
+                corr.reset_index(),
+            )
+
+        # Identify a mentioned numeric column.
+        # Prefer longer column names to avoid partial-name matches.
+        mentioned_numeric = sorted(
+            [c for c in numeric if str(c).lower() in q],
+            key=lambda c: len(str(c)),
+            reverse=True,
+        )
+        col = mentioned_numeric[0] if mentioned_numeric else None
+
+        # Sum / total
+        if any(word in q for word in ["total", "sum", "overall sales", "revenue"]):
+            if col is None:
+                return (
+                    "Please include a numeric column name in your question. "
+                    f"Available numeric columns: {', '.join(map(str, numeric))}",
+                    None,
+                )
+            value = pd.to_numeric(data[col], errors="coerce").sum()
+            return f"The total of **{col}** is **{value:,.2f}**.", None
+
+        # Average / mean
+        if any(word in q for word in ["average", "mean", "avg"]):
+            if col:
+                value = pd.to_numeric(data[col], errors="coerce").mean()
+                return f"The average of **{col}** is **{value:,.2f}**.", None
+
+            if numeric:
+                result = data[numeric].mean().rename("Average").reset_index()
+                result.columns = ["Column", "Average"]
+                return "Here are the averages for all numeric columns.", result
+
+            return "No numeric columns are available to calculate averages.", None
+
+        # Minimum and maximum
+        if any(word in q for word in [
+            "highest", "maximum", "max", "largest",
+            "lowest", "minimum", "min", "smallest"
+        ]):
+            if col is None:
+                return (
+                    "Please mention a numeric column, such as Sales or Profit.",
+                    None,
+                )
+
+            values = pd.to_numeric(data[col], errors="coerce").dropna()
+            if values.empty:
+                return f"No valid numeric values were found in {col}.", None
+
+            if any(word in q for word in ["highest", "maximum", "max", "largest"]):
+                idx = values.idxmax()
+                label = "Maximum"
+            else:
+                idx = values.idxmin()
+                label = "Minimum"
+
+            return (
+                f"**{label} {col}:** {values.loc[idx]:,.2f} "
+                f"(dataset row {data.index.get_loc(idx) + 1}).",
+                data.loc[[idx]],
+            )
+
+        # Most frequent values in a categorical column
+        if any(word in q for word in [
+            "popular", "most common", "top category",
+            "best selling", "top product", "top region"
+        ]):
+            mentioned_cat = sorted(
+                [c for c in categorical if str(c).lower() in q],
+                key=lambda c: len(str(c)),
+                reverse=True,
+            )
+
+            if not mentioned_cat:
+                return (
+                    "Please mention a category column, such as Product, "
+                    "Region, or Category. Available columns: "
+                    + ", ".join(map(str, categorical)),
+                    None,
+                )
+
+            category = mentioned_cat[0]
+
+            if col:
+                grouped = data.groupby(
+                    category, dropna=False
+                )[col].sum().sort_values(ascending=False).head(10)
+
+                result = grouped.rename(col).reset_index()
+                return f"Top {category} values ranked by total {col}:", result
+
+            counts = (
+                data[category].astype("string").value_counts().head(10)
+                .rename("Records").reset_index()
+            )
+            counts.columns = [category, "Records"]
+            return f"Most frequent values in {category}:", counts
+
+        # Dataset overview
+        if any(word in q for word in ["summary", "overview", "describe", "dataset"]):
+            summary = pd.DataFrame({
+                "Metric": [
+                    "Rows", "Columns", "Numeric columns",
+                    "Missing cells", "Duplicate rows",
+                ],
+                "Value": [
+                    len(data),
+                    len(data.columns),
+                    len(numeric),
+                    int(data.isna().sum().sum()),
+                    int(data.duplicated().sum()),
+                ],
+            })
+            return "Here is your dataset summary.", summary
+
+        return (
+            "I couldn't confidently match that question to a supported calculation.\n\n"
+            "Try asking about totals, averages, highest or lowest values, "
+            "missing data, duplicates, correlations, dataset summaries, "
+            "or the most common categories.",
+            None,
+        )
+
+    # ---------- Example questions ----------
+    st.markdown("#### Try an example question")
+
+    examples = [
+        "Give me a dataset summary",
+        "Which columns have missing values?",
+        "What is the average Sales?",
+        "What is the total Profit?",
+        "Show the highest Sales",
+        "Which Region is most common?",
+        "Which numeric columns have the strongest correlation?",
+    ]
+
+    selected_example = st.selectbox(
+        "Choose a question",
+        ["Choose an example..."] + examples,
+        key="ask_data_example",
+    )
+
+    # ---------- Chat history ----------
+    if "datanova_qa_history" not in st.session_state:
+        st.session_state["datanova_qa_history"] = []
+
+    with st.form("datanova_question_form", clear_on_submit=True):
+        question = st.text_input(
+            "Your question",
+            value=selected_example if selected_example != "Choose an example..." else "",
+            placeholder="e.g. What is the total Sales?",
+        )
+        submitted = st.form_submit_button("Find answer", type="primary")
+
+    if submitted:
+        if not question.strip():
+            st.warning("Please type a question first.")
         else:
-            st.info("Try: row count, column names, missing values, duplicates, average, correlation, highest, or lowest.")
+            answer, answer_table = answer_data_question(question, df)
+
+            # Store a snapshot of the result so it remains visible after reruns.
+            st.session_state["datanova_qa_history"].append({
+                "question": question,
+                "answer": answer,
+                "table": answer_table,
+            })
+
+    if st.session_state["datanova_qa_history"]:
+        st.markdown("#### Conversation")
+
+        for item in reversed(st.session_state["datanova_qa_history"]):
+            with st.container(border=True):
+                st.markdown(f"**You asked:** {item['question']}")
+                st.markdown(item["answer"])
+
+                if item["table"] is not None:
+                    st.dataframe(
+                        item["table"],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+        if st.button("Clear conversation", key="clear_datanova_qa"):
+            st.session_state["datanova_qa_history"] = []
+            st.rerun()
+
+    st.caption(
+        "This is a rule-based data assistant, not a generative AI model. "
+        "It uses calculations on your currently prepared dataset. "
+        "Category rankings are descriptive and do not establish causation."
+    )
 
 with tabs[9]:
     st.markdown('<div class="section-head">Reports & Export</div><div class="section-sub">Download the prepared dataset or create a compact summary report.</div>', unsafe_allow_html=True)
