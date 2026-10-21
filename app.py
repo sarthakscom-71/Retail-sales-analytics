@@ -84,19 +84,86 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+
 with st.sidebar:
-    st.markdown("### Your workspace")
-    uploaded = st.file_uploader("Upload your dataset", type=["csv", "xlsx", "xls"], help="Supported formats: CSV and Excel")
+    # Brand header
+    st.markdown("""
+    <div style="
+        padding: 16px 12px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #1e3a8a, #2563eb);
+        color: white;
+        margin-bottom: 18px;
+    ">
+        <div style="font-size: 26px; font-weight: 800;">
+            📊 DataNova
+        </div>
+        <div style="font-size: 11px; letter-spacing: 1.2px;
+                    margin-top: 5px; opacity: 0.9;">
+            SMART ANALYTICS WORKSPACE
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### 📂 Data workspace")
+
+    uploaded = st.file_uploader(
+        "Upload your dataset",
+        type=["csv", "xlsx", "xls"],
+        help="Upload a CSV or Excel file to start your analysis."
+    )
+
+    if uploaded is not None:
+        st.success(f"File selected: {uploaded.name}")
+    else:
+        st.caption("Upload a file to activate your analytics tools.")
+
     st.markdown("---")
-    st.markdown("### Data preparation")
-    dedupe = st.checkbox("Remove duplicate rows", value=False)
-    missing_mode = st.selectbox("Missing-value strategy", [
-        "Keep unchanged",
-        "Remove rows with missing values",
-        "Fill numeric median and text mode"
-    ])
+    st.markdown("### 🧹 Data preparation")
+
+    dedupe = st.checkbox(
+        "Remove duplicate rows",
+        value=False,
+        help="Remove repeated records before analysis."
+    )
+
+    missing_mode = st.selectbox(
+        "Missing-value strategy",
+        [
+            "Keep unchanged",
+            "Remove rows with missing values",
+            "Fill numeric median and text mode"
+        ],
+        help="Choose how DataNova should handle missing data."
+    )
+
     st.markdown("---")
-    st.markdown('<div class="small-note">DATANOVA · COLLEGE PROJECT EDITION · NO LOGIN REQUIRED</div>', unsafe_allow_html=True)
+    st.markdown("### ⚡ Quick help")
+
+    with st.expander("Getting started"):
+        st.markdown("""
+        **1. Upload data**  
+        Choose a CSV or Excel file.
+
+        **2. Prepare data**  
+        Select your preferred cleaning options.
+
+        **3. Explore analytics**  
+        Use the dashboard tabs to view charts,
+        insights, forecasts, and machine-learning results.
+
+        **4. Ask Your Data**  
+        Explore your dataset using natural-language questions.
+        """)
+
+    with st.expander("Supported files"):
+        st.write("• CSV files (.csv)")
+        st.write("• Excel workbooks (.xlsx, .xls)")
+        st.caption("For Excel files, choose a worksheet when prompted.")
+
+    st.markdown("---")
+    st.caption("🔒 No login required")
+    st.caption("DataNova · College Project Edition")
 
 if not uploaded:
     st.markdown('<div class="section-head">Welcome to your analytics workspace</div><div class="section-sub">Upload a dataset to activate your dashboard, insights, visual analytics, forecasting, and machine-learning tools.</div>', unsafe_allow_html=True)
